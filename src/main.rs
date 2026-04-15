@@ -3,11 +3,12 @@ mod embeddings;
 mod indexer;
 mod mcp;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
+use fastembed::EmbeddingModel;
 use mcp::tools::ToolContext;
 use rmcp::{ServiceExt, transport::stdio};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tracing_subscriber::EnvFilter;
 
@@ -25,22 +26,31 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Start the MCP server on stdio (auto-indexes vault on startup).
+    ///
+    /// The vault must have been indexed at least once with `herbalist-mcp index`
+    /// before serving — that is where the embedding model is chosen and configured.
     Serve {
         #[arg(long, env = "HERBALIST_VAULT")]
         vault: PathBuf,
-        /// Path to a local ONNX model directory (bypasses download).
+        /// Override the configured embedding model for this run.
         #[arg(long)]
         model_path: Option<PathBuf>,
-        /// Embedding model name (default: bge-small-en-v1.5).
+        /// Override the configured embedding model name for this run.
         #[arg(long)]
         model: Option<String>,
     },
     /// Index or re-index the vault without starting the server.
+    ///
+    /// On first run, prompts for an embedding model choice and saves it to
+    /// the vault index. Subsequent runs reuse the saved model automatically.
     Index {
         #[arg(long, env = "HERBALIST_VAULT")]
         vault: PathBuf,
+        /// Use a local ONNX model directory instead of downloading (bypasses prompt).
         #[arg(long)]
         model_path: Option<PathBuf>,
+        /// Embedding model name — skips the interactive prompt and updates the
+        /// saved choice. Run with --help to see available names.
         #[arg(long)]
         model: Option<String>,
     },
@@ -91,12 +101,13 @@ fn init_logging() {
         .init();
 }
 
+// ── serve ─────────────────────────────────────────────────────────────────────
+
 async fn run_serve(
     vault: PathBuf,
     model_path: Option<PathBuf>,
     model: Option<String>,
 ) -> Result<()> {
-    // MCP server logs only to stderr so stdout is clean for JSON-RPC
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::from_env("HERBALIST_LOG")
@@ -108,7 +119,13 @@ async fn run_serve(
     let vault = vault.canonicalize()?;
     tracing::info!("herbalist-mcp starting, vault={}", vault.display());
 
-    let embedder = Arc::new(build_embedder(model_path.as_deref(), model.as_deref())?);
+    // Resolve model: flag > stored config > error
+    let embedder = Arc::new(resolve_embedder_for_serve(
+        &vault,
+        model_path.as_deref(),
+        model.as_deref(),
+    )?);
+
     let db = Arc::new(Mutex::new(db::Db::open(&vault)?));
 
     // Auto-index on startup (incremental — skips unchanged files)
@@ -139,50 +156,196 @@ async fn run_serve(
     Ok(())
 }
 
+/// For `serve`: resolve the embedder without any interactive prompt.
+/// Priority: --model-path > --model flag > stored config > error.
+fn resolve_embedder_for_serve(
+    vault: &Path,
+    model_path: Option<&Path>,
+    model_name: Option<&str>,
+) -> Result<embeddings::Embedder> {
+    if let Some(path) = model_path {
+        tracing::info!("loading embedding model from {}", path.display());
+        return embeddings::Embedder::from_path(path);
+    }
+
+    if let Some(name) = model_name {
+        let model = embeddings::model_from_name(name)?;
+        tracing::info!("loading embedding model '{}' from registry", name);
+        return embeddings::Embedder::from_registry(model);
+    }
+
+    // Fall back to stored config
+    let db = db::Db::open(vault)?;
+    match db.get_config("model")? {
+        Some(stored) => {
+            tracing::info!("using configured embedding model: {}", stored);
+            let model = embeddings::model_from_name(&stored)?;
+            embeddings::Embedder::from_registry(model)
+        }
+        None => bail!(
+            "No embedding model configured for this vault.\n\
+             Run `herbalist-mcp index --vault {}` first to index the vault \
+             and choose an embedding model.",
+            vault.display()
+        ),
+    }
+}
+
+// ── index ─────────────────────────────────────────────────────────────────────
+
 fn run_index(vault: PathBuf, model_path: Option<PathBuf>, model: Option<String>) -> Result<()> {
     let vault = vault.canonicalize()?;
-    let embedder = Arc::new(build_embedder(model_path.as_deref(), model.as_deref())?);
+
+    // Resolve model: --model-path > --model flag > stored config > interactive prompt
+    let (embedder, model_key) = resolve_embedder_for_index(
+        &vault,
+        model_path.as_deref(),
+        model.as_deref(),
+    )?;
+    let embedder = Arc::new(embedder);
+
     let db = Arc::new(Mutex::new(db::Db::open(&vault)?));
+
+    // Persist the model choice so `serve` and `search` can pick it up
+    if let Some(key) = model_key {
+        db.lock().unwrap().set_config("model", &key)?;
+    }
+
     indexer::index_vault(&vault, &db, &embedder)?;
     eprintln!("Indexing complete.");
     Ok(())
 }
 
-fn run_search(vault: PathBuf, query: String, top_k: usize) -> Result<()> {
-    let vault = vault.canonicalize()?;
-    // Search doesn't need an embedder loaded yet — we need it for query embedding
-    let db_only = db::Db::open(&vault)?;
-    let stored_model = db_only.get_config("model")?.unwrap_or_else(|| "bge-small-en-v1.5".to_owned());
-    drop(db_only);
+/// For `index`: resolve the embedder, showing an interactive prompt when needed.
+/// Returns the embedder and the model key to persist (None for --model-path).
+fn resolve_embedder_for_index(
+    vault: &Path,
+    model_path: Option<&Path>,
+    model_name: Option<&str>,
+) -> Result<(embeddings::Embedder, Option<String>)> {
+    // --model-path: use local file, no key to persist
+    if let Some(path) = model_path {
+        eprintln!("Loading embedding model from {}", path.display());
+        return Ok((embeddings::Embedder::from_path(path)?, None));
+    }
 
-    let embedder = Arc::new(build_embedder(None, Some(&stored_model))?);
-    let db = Arc::new(Mutex::new(db::Db::open(&vault)?));
-    let ctx = ToolContext { vault, db, embedder };
+    // --model flag: explicit override, update stored config
+    if let Some(name) = model_name {
+        let model = embeddings::model_from_name(name)?;
+        eprintln!("Loading embedding model '{name}' from registry...");
+        return Ok((
+            embeddings::Embedder::from_registry(model)?,
+            Some(name.to_owned()),
+        ));
+    }
 
-    let result = mcp::tools::search_notes(&ctx, &serde_json::json!({
-        "query": query,
-        "top_k": top_k,
-    }))?;
+    // Check for previously saved choice
+    let db = db::Db::open(vault)?;
+    if let Some(stored) = db.get_config("model")? {
+        eprintln!("Using configured embedding model: {stored}");
+        let model = embeddings::model_from_name(&stored)?;
+        return Ok((embeddings::Embedder::from_registry(model)?, Some(stored)));
+    }
+    drop(db);
 
-    println!("{}", serde_json::to_string_pretty(&result)?);
-    Ok(())
+    // First-time setup: interactive model selection
+    let (name, model) = prompt_model_choice()?;
+    eprintln!("\nDownloading '{name}'...");
+    Ok((embeddings::Embedder::from_registry(model)?, Some(name)))
 }
 
-fn build_embedder(
-    model_path: Option<&std::path::Path>,
-    model_name: Option<&str>,
-) -> Result<embeddings::Embedder> {
-    if let Some(path) = model_path {
-        tracing::info!("loading embedding model from {}", path.display());
-        embeddings::Embedder::from_path(path)
-    } else {
-        let model = model_name
-            .map(embeddings::model_from_name)
-            .transpose()?
-            .unwrap_or_else(embeddings::default_model);
-        tracing::info!("loading embedding model from registry");
-        embeddings::Embedder::from_registry(model)
+/// Interactive model-selection menu printed to stderr.
+/// Returns the canonical model name string and the EmbeddingModel value.
+fn prompt_model_choice() -> Result<(String, EmbeddingModel)> {
+    const MODELS: &[(&str, &str, EmbeddingModel)] = &[
+        (
+            "bge-small-en-v1.5",
+            "~130 MB  Fast, good quality (recommended)",
+            EmbeddingModel::BGESmallENV15,
+        ),
+        (
+            "all-minilm-l6-v2",
+            " ~90 MB  Faster, lower quality",
+            EmbeddingModel::AllMiniLML6V2,
+        ),
+        (
+            "bge-base-en-v1.5",
+            "~440 MB  Better quality, slower indexing",
+            EmbeddingModel::BGEBaseENV15,
+        ),
+        (
+            "nomic-embed-text-v1.5",
+            "~550 MB  Best quality",
+            EmbeddingModel::NomicEmbedTextV15,
+        ),
+    ];
+
+    eprintln!();
+    eprintln!("No embedding model configured for this vault.");
+    eprintln!("Choose a model to download (one-time setup):");
+    eprintln!();
+    for (i, (name, desc, _)) in MODELS.iter().enumerate() {
+        eprintln!("  [{}] {:<26} {}", i + 1, name, desc);
     }
+    eprintln!();
+    eprintln!("  Or re-run with --model-path <dir> to use a local ONNX model.");
+    eprintln!();
+    eprint!("Choice [1-{}]: ", MODELS.len());
+
+    // Flush stderr so the prompt appears before we block on stdin
+    use std::io::Write;
+    std::io::stderr().flush()?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let choice: usize = input.trim().parse().unwrap_or(0);
+
+    if choice < 1 || choice > MODELS.len() {
+        bail!(
+            "Invalid choice '{}'. Re-run and enter a number between 1 and {}.",
+            input.trim(),
+            MODELS.len()
+        );
+    }
+
+    let (name, _, model) = &MODELS[choice - 1];
+    Ok((name.to_string(), model.clone()))
+}
+
+// ── search ────────────────────────────────────────────────────────────────────
+
+fn run_search(vault: PathBuf, query: String, top_k: usize) -> Result<()> {
+    let vault = vault.canonicalize()?;
+
+    let db_only = db::Db::open(&vault)?;
+    let stored = db_only.get_config("model")?;
+    drop(db_only);
+
+    let embedder = match stored {
+        Some(name) => {
+            let model = embeddings::model_from_name(&name)?;
+            embeddings::Embedder::from_registry(model)?
+        }
+        None => bail!(
+            "No embedding model configured for this vault.\n\
+             Run `herbalist-mcp index --vault {}` first.",
+            vault.display()
+        ),
+    };
+
+    let db = Arc::new(Mutex::new(db::Db::open(&vault)?));
+    let ctx = ToolContext {
+        vault,
+        db,
+        embedder: Arc::new(embedder),
+    };
+
+    let result = mcp::tools::search_notes(
+        &ctx,
+        &serde_json::json!({ "query": query, "top_k": top_k }),
+    )?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
 }
 
 // ── file watcher ──────────────────────────────────────────────────────────────
@@ -219,7 +382,6 @@ fn watch_vault(
             continue;
         }
 
-        // Small debounce
         std::thread::sleep(Duration::from_millis(500));
 
         for path in event.paths {
