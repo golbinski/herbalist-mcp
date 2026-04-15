@@ -1,0 +1,137 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: audit-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: audit-cargo-
+
+      - name: Run cargo audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux:
+    name: Linux x86_64
+    runs-on: ubuntu-latest
+    needs: audit
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: linux-cargo-
+
+      - name: Build release binary
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+
+      - name: Rename binary
+        run: cp target/x86_64-unknown-linux-gnu/release/herbalist-mcp herbalist-mcp-linux-x86_64
+
+      - name: Generate SHA256 checksum
+        run: sha256sum herbalist-mcp-linux-x86_64 > herbalist-mcp-linux-x86_64.sha256
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: herbalist-mcp-linux-x86_64
+
+      - name: VirusTotal scan
+        uses: crazy-max/ghaction-virustotal@v4
+        with:
+          vt_api_key: ${{ secrets.VT_API_KEY }}
+          files: herbalist-mcp-linux-x86_64
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            herbalist-mcp-linux-x86_64
+            herbalist-mcp-linux-x86_64.sha256
+          fail_on_unmatched_files: true
+
+  build-windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    needs: audit
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: windows-cargo-
+
+      - name: Build release binary
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Rename binary
+        run: cp target/x86_64-pc-windows-msvc/release/herbalist-mcp.exe herbalist-mcp-windows-x86_64.exe
+
+      - name: Generate SHA256 checksum
+        run: Get-FileHash herbalist-mcp-windows-x86_64.exe -Algorithm SHA256 | Select-Object -ExpandProperty Hash | Out-File -Encoding ascii herbalist-mcp-windows-x86_64.sha256
+        shell: pwsh
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: herbalist-mcp-windows-x86_64.exe
+
+      - name: VirusTotal scan
+        uses: crazy-max/ghaction-virustotal@v4
+        with:
+          vt_api_key: ${{ secrets.VT_API_KEY }}
+          files: herbalist-mcp-windows-x86_64.exe
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            herbalist-mcp-windows-x86_64.exe
+            herbalist-mcp-windows-x86_64.sha256
+          fail_on_unmatched_files: true
