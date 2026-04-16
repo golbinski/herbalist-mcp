@@ -11,8 +11,8 @@ permissions:
   attestations: write
 
 jobs:
-  audit:
-    name: Security audit
+  check:
+    name: Format + Lint
     runs-on: ubuntu-latest
 
     steps:
@@ -20,6 +20,8 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -27,18 +29,30 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: audit-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: audit-cargo-
+            target
+          key: check-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: check-cargo-
 
-      - name: Run cargo audit
-        uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: cargo fmt
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy -- -D warnings
+
+  deny:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: cargo deny
+        uses: EmbarkStudios/cargo-deny-action@v2
 
   build-linux:
     name: Linux x86_64
     runs-on: ubuntu-latest
-    needs: audit
+    needs: [check, deny]
 
     steps:
       - uses: actions/checkout@v4
@@ -87,7 +101,7 @@ jobs:
   build-macos-x86:
     name: macOS x86_64
     runs-on: macos-13
-    needs: audit
+    needs: [check, deny]
 
     steps:
       - uses: actions/checkout@v4
@@ -138,7 +152,7 @@ jobs:
   build-macos-arm:
     name: macOS aarch64
     runs-on: macos-latest
-    needs: audit
+    needs: [check, deny]
 
     steps:
       - uses: actions/checkout@v4
@@ -189,7 +203,7 @@ jobs:
   build-windows:
     name: Windows x86_64
     runs-on: windows-latest
-    needs: audit
+    needs: [check, deny]
 
     steps:
       - uses: actions/checkout@v4
