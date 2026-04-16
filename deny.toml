@@ -1,6 +1,11 @@
 [advisories]
 version = 2
-ignore = []
+ignore = [
+    # Transitive deps of fastembed — unmaintained advisories, no known CVE.
+    # Can't upgrade without a fastembed release that updates these deps.
+    { id = "RUSTSEC-2025-0119", reason = "number_prefix pulled in by indicatif via hf-hub/fastembed" },
+    { id = "RUSTSEC-2024-0436", reason = "paste pulled in transitively via fastembed" },
+]
 
 [licenses]
 version = 2
@@ -13,8 +18,6 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
-    "OpenSSL",
     "Zlib",
     "BSL-1.0",
     "CC0-1.0",
@@ -24,13 +27,10 @@ allow = [
     "CDLA-Permissive-2.0",
     # MPL-2.0: file-level copyleft only — fine for binary distribution
     "MPL-2.0",
+    # NCSA: University of Illinois open source license (OSI/FSF approved, permissive)
+    # Used by libfuzzer-sys (build-dep of rav1e → ravif → image → fastembed)
+    "NCSA",
 ]
-
-# r-efi is MIT OR Apache-2.0 OR LGPL-2.1-or-later; we take MIT/Apache-2.0.
-[[licenses.clarify]]
-name = "r-efi"
-expression = "MIT OR Apache-2.0"
-license-files = [{ path = "LICENSE", hash = 0xad410194 }]
 
 [bans]
 multiple-versions = "warn"
