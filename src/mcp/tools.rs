@@ -21,7 +21,12 @@ pub fn search_notes(ctx: &ToolContext, params: &Value) -> Result<Value> {
     let top_k = params["top_k"].as_u64().unwrap_or(10) as usize;
 
     // Semantic search: embed query, cosine over all chunk embeddings
-    let query_vec = ctx.embedder.embed(&[query])?.into_iter().next().unwrap_or_default();
+    let query_vec = ctx
+        .embedder
+        .embed(&[query])?
+        .into_iter()
+        .next()
+        .unwrap_or_default();
 
     let chunks = ctx.db.lock().unwrap().all_embedded_chunks()?;
 
@@ -143,9 +148,7 @@ pub fn related_notes(ctx: &ToolContext, params: &Value) -> Result<Value> {
     let results: Vec<Value> = scored
         .into_iter()
         .take(top_k)
-        .map(|(score, path)| {
-            json!({ "path": path, "score": (score * 1000.0) as i64 })
-        })
+        .map(|(score, path)| json!({ "path": path, "score": (score * 1000.0) as i64 }))
         .collect();
 
     Ok(json!({ "results": results }))

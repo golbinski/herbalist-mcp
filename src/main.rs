@@ -7,7 +7,7 @@ use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use fastembed::EmbeddingModel;
 use mcp::tools::ToolContext;
-use rmcp::{ServiceExt, transport::stdio};
+use rmcp::{transport::stdio, ServiceExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tracing_subscriber::EnvFilter;
@@ -72,7 +72,11 @@ async fn main() -> Result<()> {
     match cli.command {
         None | Some(Command::Serve { .. }) => {
             let (vault, model_path, model) = match cli.command {
-                Some(Command::Serve { vault, model_path, model }) => (vault, model_path, model),
+                Some(Command::Serve {
+                    vault,
+                    model_path,
+                    model,
+                }) => (vault, model_path, model),
                 _ => {
                     eprintln!("No subcommand given. Use --help for usage.");
                     std::process::exit(1);
@@ -80,11 +84,19 @@ async fn main() -> Result<()> {
             };
             run_serve(vault, model_path, model).await
         }
-        Some(Command::Index { vault, model_path, model }) => {
+        Some(Command::Index {
+            vault,
+            model_path,
+            model,
+        }) => {
             init_logging();
             run_index(vault, model_path, model)
         }
-        Some(Command::Search { vault, query, top_k }) => {
+        Some(Command::Search {
+            vault,
+            query,
+            top_k,
+        }) => {
             init_logging();
             run_search(vault, query, top_k)
         }
@@ -141,7 +153,11 @@ async fn run_serve(
         }
     });
 
-    let ctx = ToolContext { vault, db, embedder };
+    let ctx = ToolContext {
+        vault,
+        db,
+        embedder,
+    };
     let server = mcp::HerbalistServer::new(ctx);
     tracing::info!("MCP server ready");
 
@@ -197,11 +213,8 @@ fn run_index(vault: PathBuf, model_path: Option<PathBuf>, model: Option<String>)
     let vault = vault.canonicalize()?;
 
     // Resolve model: --model-path > --model flag > stored config > interactive prompt
-    let (embedder, model_key) = resolve_embedder_for_index(
-        &vault,
-        model_path.as_deref(),
-        model.as_deref(),
-    )?;
+    let (embedder, model_key) =
+        resolve_embedder_for_index(&vault, model_path.as_deref(), model.as_deref())?;
     let embedder = Arc::new(embedder);
 
     let db = Arc::new(Mutex::new(db::Db::open(&vault)?));
@@ -340,10 +353,8 @@ fn run_search(vault: PathBuf, query: String, top_k: usize) -> Result<()> {
         embedder: Arc::new(embedder),
     };
 
-    let result = mcp::tools::search_notes(
-        &ctx,
-        &serde_json::json!({ "query": query, "top_k": top_k }),
-    )?;
+    let result =
+        mcp::tools::search_notes(&ctx, &serde_json::json!({ "query": query, "top_k": top_k }))?;
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }

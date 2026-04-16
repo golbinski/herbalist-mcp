@@ -23,10 +23,8 @@ pub fn index_vault(vault: &Path, db: &Arc<Mutex<Db>>, embedder: &Arc<Embedder>) 
     let name_map = wikilinks::build_name_map(&md_files);
 
     // Track which paths are currently on disk for stale-entry cleanup
-    let on_disk: std::collections::HashSet<String> = md_files
-        .iter()
-        .map(|p| vault_relative(vault, p))
-        .collect();
+    let on_disk: std::collections::HashSet<String> =
+        md_files.iter().map(|p| vault_relative(vault, p)).collect();
 
     // Remove DB entries for files no longer on disk
     {
@@ -45,8 +43,8 @@ pub fn index_vault(vault: &Path, db: &Arc<Mutex<Db>>, embedder: &Arc<Embedder>) 
     for file in &md_files {
         let rel = vault_relative(vault, file);
         let mtime = file_mtime(file).unwrap_or(0);
-        let content = std::fs::read_to_string(file)
-            .with_context(|| format!("reading {}", file.display()))?;
+        let content =
+            std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
         let sha = sha256(&content);
 
         let db = db.lock().unwrap();
@@ -218,7 +216,10 @@ pub fn reindex_file(
     }
 
     if !texts_for_embedding.is_empty() {
-        let texts: Vec<&str> = texts_for_embedding.iter().map(|(_, t)| t.as_str()).collect();
+        let texts: Vec<&str> = texts_for_embedding
+            .iter()
+            .map(|(_, t)| t.as_str())
+            .collect();
         let embeddings = embedder.embed(&texts)?;
         let db = db.lock().unwrap();
         for ((id, _), emb) in texts_for_embedding.iter().zip(embeddings.iter()) {
@@ -282,8 +283,14 @@ fn extract_inline_tags(body: &str) -> Vec<String> {
     let mut tags = Vec::new();
     for word in body.split_whitespace() {
         if word.starts_with('#') && word.len() > 1 {
-            let tag = word.trim_start_matches('#').trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
-            if !tag.is_empty() && tag.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+            let tag = word
+                .trim_start_matches('#')
+                .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
+            if !tag.is_empty()
+                && tag
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+            {
                 tags.push(tag.to_owned());
             }
         }

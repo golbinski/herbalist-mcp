@@ -1,12 +1,16 @@
 pub mod cleora;
 
 use anyhow::{bail, Context, Result};
-use fastembed::{EmbeddingModel, InitOptions, InitOptionsUserDefined, TextEmbedding, TokenizerFiles, UserDefinedEmbeddingModel};
+use fastembed::{
+    EmbeddingModel, InitOptions, InitOptionsUserDefined, TextEmbedding, TokenizerFiles,
+    UserDefinedEmbeddingModel,
+};
 use std::path::Path;
 
 /// Wrapper around a fastembed TextEmbedding model.
 pub struct Embedder {
     inner: TextEmbedding,
+    #[allow(dead_code)] // stored at index time; callers may inspect it
     pub dimension: usize,
 }
 
@@ -22,9 +26,7 @@ impl Embedder {
         let cache_dir = model_cache_dir();
         std::fs::create_dir_all(&cache_dir)
             .with_context(|| format!("creating cache dir {}", cache_dir.display()))?;
-        let inner = TextEmbedding::try_new(
-            InitOptions::new(model).with_cache_dir(cache_dir),
-        )?;
+        let inner = TextEmbedding::try_new(InitOptions::new(model).with_cache_dir(cache_dir))?;
         Ok(Self { inner, dimension })
     }
 
@@ -51,13 +53,16 @@ impl Embedder {
         };
         let user_model = UserDefinedEmbeddingModel::new(onnx_file, tokenizer_files);
         let dimension = detect_dimension(&user_model);
-        let inner = TextEmbedding::try_new_from_user_defined(user_model, InitOptionsUserDefined::default())?;
+        let inner = TextEmbedding::try_new_from_user_defined(
+            user_model,
+            InitOptionsUserDefined::default(),
+        )?;
         Ok(Self { inner, dimension })
     }
 
     /// Embed a batch of text strings. Returns one vector per input.
     pub fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        Ok(self.inner.embed(texts.to_vec(), None)?)
+        self.inner.embed(texts.to_vec(), None)
     }
 }
 
@@ -77,7 +82,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
-pub fn l2_normalize(v: &mut Vec<f32>) {
+pub fn l2_normalize(v: &mut [f32]) {
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > f32::EPSILON {
         for x in v.iter_mut() {
@@ -94,7 +99,9 @@ fn model_dimension(model: &EmbeddingModel) -> usize {
         EmbeddingModel::AllMiniLML6V2 | EmbeddingModel::AllMiniLML6V2Q => 384,
         EmbeddingModel::BGESmallENV15 | EmbeddingModel::BGESmallENV15Q => 384,
         EmbeddingModel::BGEBaseENV15 | EmbeddingModel::BGEBaseENV15Q => 768,
-        EmbeddingModel::NomicEmbedTextV1 | EmbeddingModel::NomicEmbedTextV15 | EmbeddingModel::NomicEmbedTextV15Q => 768,
+        EmbeddingModel::NomicEmbedTextV1
+        | EmbeddingModel::NomicEmbedTextV15
+        | EmbeddingModel::NomicEmbedTextV15Q => 768,
         _ => 384,
     }
 }
@@ -118,11 +125,6 @@ pub fn model_from_name(name: &str) -> Result<EmbeddingModel> {
             other
         ),
     }
-}
-
-/// The default model used when none is specified.
-pub fn default_model() -> EmbeddingModel {
-    EmbeddingModel::BGESmallENV15
 }
 
 /// Resolve the model cache directory.

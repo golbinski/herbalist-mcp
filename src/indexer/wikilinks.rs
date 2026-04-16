@@ -6,9 +6,7 @@ use std::sync::OnceLock;
 static WIKILINK_RE: OnceLock<Regex> = OnceLock::new();
 
 fn wikilink_re() -> &'static Regex {
-    WIKILINK_RE.get_or_init(|| {
-        Regex::new(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?]]").unwrap()
-    })
+    WIKILINK_RE.get_or_init(|| Regex::new(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?]]").unwrap())
 }
 
 /// Extract raw wikilink targets from markdown content.

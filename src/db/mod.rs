@@ -81,9 +81,9 @@ impl Db {
     // ── notes ────────────────────────────────────────────────────────────────
 
     pub fn get_note_meta(&self, path: &str) -> Result<Option<NoteMeta>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT path, mtime, sha256 FROM notes WHERE path = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT path, mtime, sha256 FROM notes WHERE path = ?1")?;
         let mut rows = stmt.query(params![path])?;
         if let Some(row) = rows.next()? {
             Ok(Some(NoteMeta {
@@ -109,10 +109,8 @@ impl Db {
         // Cascades to chunks, tags, frontmatter, note_embeddings, links (source side)
         self.conn
             .execute("DELETE FROM notes WHERE path=?1", params![path])?;
-        self.conn.execute(
-            "DELETE FROM links WHERE source_path=?1",
-            params![path],
-        )?;
+        self.conn
+            .execute("DELETE FROM links WHERE source_path=?1", params![path])?;
         Ok(())
     }
 
@@ -207,10 +205,8 @@ impl Db {
             "DELETE FROM chunks_fts WHERE note_path=?1",
             params![note_path],
         )?;
-        self.conn.execute(
-            "DELETE FROM chunks WHERE note_path=?1",
-            params![note_path],
-        )?;
+        self.conn
+            .execute("DELETE FROM chunks WHERE note_path=?1", params![note_path])?;
         Ok(())
     }
 
@@ -254,26 +250,6 @@ impl Db {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(chunks)
-    }
-
-    pub fn chunks_without_embedding(&self, note_path: &str) -> Result<Vec<(i64, String, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, heading, content FROM chunks WHERE note_path=?1 AND embedding IS NULL",
-        )?;
-        let rows = stmt
-            .query_map(params![note_path], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    pub fn get_note_content_chunks(&self, note_path: &str) -> Result<Vec<(String, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT heading, content FROM chunks WHERE note_path=?1 ORDER BY id",
-        )?;
-        let rows = stmt
-            .query_map(params![note_path], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
     }
 
     // ── FTS search ───────────────────────────────────────────────────────────
@@ -385,9 +361,7 @@ impl Db {
     // ── config ───────────────────────────────────────────────────────────────
 
     pub fn get_config(&self, key: &str) -> Result<Option<String>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT value FROM config WHERE key=?1")?;
+        let mut stmt = self.conn.prepare("SELECT value FROM config WHERE key=?1")?;
         let mut rows = stmt.query(params![key])?;
         if let Some(row) = rows.next()? {
             Ok(Some(row.get(0)?))
@@ -409,7 +383,9 @@ impl Db {
 // ── row types ────────────────────────────────────────────────────────────────
 
 pub struct NoteMeta {
+    #[allow(dead_code)]
     pub path: String,
+    #[allow(dead_code)]
     pub mtime: i64,
     pub sha256: String,
 }
@@ -427,6 +403,7 @@ pub struct FtsResult {
     pub note_path: String,
     pub heading: String,
     pub snippet: String,
+    #[allow(dead_code)] // populated by FTS5; available for future ranking use
     pub rank: f64,
 }
 

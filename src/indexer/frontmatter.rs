@@ -25,7 +25,10 @@ fn split_frontmatter(content: &str) -> (&str, &str) {
     for (i, line) in body.lines().enumerate() {
         if line.trim() == "---" || line.trim() == "..." {
             let end = after_open + body.lines().take(i).map(|l| l.len() + 1).sum::<usize>();
-            return (&content[after_open..end], &body[body.lines().take(i + 1).map(|l| l.len() + 1).sum::<usize>()..]);
+            return (
+                &content[after_open..end],
+                &body[body.lines().take(i + 1).map(|l| l.len() + 1).sum::<usize>()..],
+            );
         }
     }
     // No closing delimiter found — treat as no frontmatter
@@ -41,19 +44,17 @@ pub fn parse(content: &str) -> (Frontmatter, String) {
 
     let mut fm = Frontmatter::default();
 
-    match serde_yaml::from_str::<serde_yaml::Value>(fm_text) {
-        Ok(serde_yaml::Value::Mapping(map)) => {
-            for (k, v) in &map {
-                let key = yaml_value_to_string(k);
-                if key == "tags" {
-                    fm.tags = extract_tags(v);
-                } else {
-                    fm.fields.push((key, yaml_value_to_string(v)));
-                }
+    if let Ok(serde_yaml::Value::Mapping(map)) = serde_yaml::from_str::<serde_yaml::Value>(fm_text)
+    {
+        for (k, v) in &map {
+            let key = yaml_value_to_string(k);
+            if key == "tags" {
+                fm.tags = extract_tags(v);
+            } else {
+                fm.fields.push((key, yaml_value_to_string(v)));
             }
         }
-        _ => {} // malformed frontmatter — skip gracefully
-    }
+    } // malformed frontmatter — skip gracefully
 
     // Also pull tags from the fields list for convenience
     (fm, body.to_owned())
@@ -97,7 +98,10 @@ mod tests {
         let content = "---\ntitle: My Note\ntags:\n  - rust\n  - mcp\n---\n# Hello\nBody.";
         let (fm, body) = parse(content);
         assert_eq!(fm.tags, vec!["rust", "mcp"]);
-        assert!(fm.fields.iter().any(|(k, v)| k == "title" && v == "My Note"));
+        assert!(fm
+            .fields
+            .iter()
+            .any(|(k, v)| k == "title" && v == "My Note"));
         assert!(body.contains("# Hello"));
     }
 

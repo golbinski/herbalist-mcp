@@ -47,12 +47,10 @@ pub fn chunk(body: &str) -> Vec<Chunk> {
 
 fn parse_heading(line: &str) -> Option<String> {
     let line = line.trim_end();
-    if line.starts_with("## ") {
-        Some(line[3..].trim().to_owned())
-    } else if line.starts_with("# ") {
-        Some(line[2..].trim().to_owned())
+    if let Some(rest) = line.strip_prefix("## ") {
+        Some(rest.trim().to_owned())
     } else {
-        None
+        line.strip_prefix("# ").map(|rest| rest.trim().to_owned())
     }
 }
 
