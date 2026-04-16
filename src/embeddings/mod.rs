@@ -12,10 +12,19 @@ pub struct Embedder {
 
 impl Embedder {
     /// Load a model from fastembed's curated registry.
-    /// Downloads and caches the model on first use (~60–130 MB).
+    /// Downloads and caches the model on first use (~90–550 MB depending on model).
+    /// Cache location: $FASTEMBED_CACHE_DIR, or the platform cache dir:
+    ///   macOS:   ~/Library/Caches/herbalist-mcp
+    ///   Linux:   ~/.cache/herbalist-mcp
+    ///   Windows: %LOCALAPPDATA%\herbalist-mcp
     pub fn from_registry(model: EmbeddingModel) -> Result<Self> {
         let dimension = model_dimension(&model);
-        let inner = TextEmbedding::try_new(InitOptions::new(model))?;
+        let cache_dir = model_cache_dir();
+        std::fs::create_dir_all(&cache_dir)
+            .with_context(|| format!("creating cache dir {}", cache_dir.display()))?;
+        let inner = TextEmbedding::try_new(
+            InitOptions::new(model).with_cache_dir(cache_dir),
+        )?;
         Ok(Self { inner, dimension })
     }
 
@@ -114,4 +123,15 @@ pub fn model_from_name(name: &str) -> Result<EmbeddingModel> {
 /// The default model used when none is specified.
 pub fn default_model() -> EmbeddingModel {
     EmbeddingModel::BGESmallENV15
+}
+
+/// Resolve the model cache directory.
+/// Respects FASTEMBED_CACHE_DIR env var; otherwise uses the platform cache dir.
+pub fn model_cache_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("FASTEMBED_CACHE_DIR") {
+        return std::path::PathBuf::from(dir);
+    }
+    dirs::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("herbalist-mcp")
 }
