@@ -22,7 +22,16 @@ cargo build --release
 
 The binary is at `target/release/herbalist-mcp`. Copy it anywhere on your `PATH`.
 
-Or download a pre-built binary from [Releases](https://github.com/golbinski/herbalist-mcp/releases). Verify the SHA256 checksum and GitHub build provenance attestation before running.
+Or download a pre-built binary from [Releases](https://github.com/golbinski/herbalist-mcp/releases):
+
+| Platform | File |
+|----------|------|
+| macOS (Apple Silicon) | `herbalist-mcp-macos-aarch64` |
+| macOS (Intel) | `herbalist-mcp-macos-x86_64` |
+| Linux x86_64 | `herbalist-mcp-linux-x86_64` |
+| Windows x86_64 | `herbalist-mcp-windows-x86_64.exe` |
+
+Each release includes a `.sha256` checksum file and a GitHub build provenance attestation. Verify both before running.
 
 ## Quick start with the sample vault
 
