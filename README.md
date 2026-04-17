@@ -124,7 +124,9 @@ To use a pre-downloaded model and skip the download entirely, pass `--model-path
 
 The vault must be indexed before the MCP server can start. Run `herbalist-mcp index --vault <path>` once first, then add to your MCP client config:
 
-**Claude Code** (`~/.claude.json`) or **Claude Desktop** (`claude_desktop_config.json`):
+### Claude Desktop / Claude Code
+
+**Claude Desktop** (`claude_desktop_config.json`) and **Claude Code** (`~/.claude.json`):
 
 ```json
 {
@@ -156,6 +158,48 @@ Or using the environment variable shorthand:
   }
 }
 ```
+
+### VS Code (GitHub Copilot)
+
+MCP support requires VS Code 1.99 or later with the GitHub Copilot extension.
+
+**Workspace-scoped** — create `.vscode/mcp.json` in your project:
+
+```json
+{
+  "servers": {
+    "herbalist": {
+      "type": "stdio",
+      "command": "/path/to/herbalist-mcp",
+      "args": ["serve", "--vault", "/path/to/your/vault"],
+      "env": {
+        "HERBALIST_LOG": "herbalist_mcp=warn"
+      }
+    }
+  }
+}
+```
+
+**User-scoped** — add to your VS Code `settings.json` (`Ctrl+Shift+P` → *Preferences: Open User Settings (JSON)*):
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "herbalist": {
+        "type": "stdio",
+        "command": "/path/to/herbalist-mcp",
+        "args": ["serve", "--vault", "/path/to/your/vault"],
+        "env": {
+          "HERBALIST_LOG": "herbalist_mcp=warn"
+        }
+      }
+    }
+  }
+}
+```
+
+After saving, enable the server via the MCP: Enable/Disable Servers command or the Copilot chat toolbar.
 
 ### Environment variables
 
