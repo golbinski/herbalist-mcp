@@ -180,19 +180,23 @@ MCP support requires VS Code 1.99 or later with the GitHub Copilot extension.
 }
 ```
 
-**User-scoped** — add to your VS Code `settings.json` (`Ctrl+Shift+P` → *Preferences: Open User Settings (JSON)*):
+**User-scoped** — create `mcp.json` in the VS Code user config directory:
+
+| Platform | Path |
+|----------|------|
+| macOS | `~/Library/Application Support/Code/User/mcp.json` |
+| Linux | `~/.config/Code/User/mcp.json` |
+| Windows | `%APPDATA%\Code\User\mcp.json` |
 
 ```json
 {
-  "mcp": {
-    "servers": {
-      "herbalist": {
-        "type": "stdio",
-        "command": "/path/to/herbalist-mcp",
-        "args": ["serve", "--vault", "/path/to/your/vault"],
-        "env": {
-          "HERBALIST_LOG": "herbalist_mcp=warn"
-        }
+  "servers": {
+    "herbalist": {
+      "type": "stdio",
+      "command": "/path/to/herbalist-mcp",
+      "args": ["serve", "--vault", "/path/to/your/vault"],
+      "env": {
+        "HERBALIST_LOG": "herbalist_mcp=warn"
       }
     }
   }
