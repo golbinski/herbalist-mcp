@@ -92,8 +92,23 @@ pub fn compute(db: &Arc<Mutex<Db>>) -> Result<()> {
         }
     }
 
-    // Persist
-    for (path, vec) in note_paths.iter().zip(vecs.iter()) {
+    // Remove embeddings for notes that have become isolated (no links in or out)
+    // — their hash-derived vectors carry no graph signal.
+    db.conn.execute(
+        "DELETE FROM note_embeddings
+         WHERE note_path NOT IN (
+             SELECT source_path FROM links
+             UNION
+             SELECT target_path FROM links
+         )",
+        [],
+    )?;
+
+    // Persist only notes with at least one link
+    for (i, (path, vec)) in note_paths.iter().zip(vecs.iter()).enumerate() {
+        if out_neighbors[i].is_empty() && in_neighbors[i].is_empty() {
+            continue;
+        }
         db.upsert_note_embedding(path, vec)?;
     }
 

@@ -187,7 +187,7 @@ impl Db {
     }
 
     /// All tags for a specific note.
-    pub fn notes_by_tag_for_note(&self, note_path: &str) -> Result<Vec<String>> {
+    pub fn tags_for_note(&self, note_path: &str) -> Result<Vec<String>> {
         let mut stmt = self
             .conn
             .prepare("SELECT tag FROM tags WHERE note_path=?1 ORDER BY tag")?;
@@ -255,6 +255,7 @@ impl Db {
     // ── FTS search ───────────────────────────────────────────────────────────
 
     pub fn fts_search(&self, query: &str, limit: usize) -> Result<Vec<FtsResult>> {
+        let safe_query = sanitize_fts_query(query);
         let mut stmt = self.conn.prepare(
             "SELECT chunk_id, note_path, heading, snippet(chunks_fts, 0, '[', ']', '...', 32), rank
              FROM chunks_fts
@@ -263,7 +264,7 @@ impl Db {
              LIMIT ?2",
         )?;
         let rows = stmt
-            .query_map(params![query, limit as i64], |r| {
+            .query_map(params![safe_query, limit as i64], |r| {
                 Ok(FtsResult {
                     chunk_id: r.get(0)?,
                     note_path: r.get(1)?,
@@ -405,6 +406,25 @@ pub struct FtsResult {
     pub snippet: String,
     #[allow(dead_code)] // populated by FTS5; available for future ranking use
     pub rank: f64,
+}
+
+// ── FTS helpers ──────────────────────────────────────────────────────────────
+
+/// Escape an arbitrary string for use as an FTS5 MATCH query.
+/// Each whitespace-separated token is wrapped in double-quotes so that FTS5
+/// operators (AND, OR, NOT, :, *, parentheses) in user input are treated as
+/// literals rather than query syntax.
+fn sanitize_fts_query(q: &str) -> String {
+    let tokens: Vec<String> = q
+        .split_whitespace()
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect();
+    if tokens.is_empty() {
+        // Empty MATCH is a syntax error; fall back to a no-op that returns nothing.
+        "\"\"".to_owned()
+    } else {
+        tokens.join(" ")
+    }
 }
 
 // ── blob helpers ─────────────────────────────────────────────────────────────

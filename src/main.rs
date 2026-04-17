@@ -366,9 +366,13 @@ fn watch_vault(
     db: Arc<Mutex<db::Db>>,
     embedder: Arc<embeddings::Embedder>,
 ) -> Result<()> {
-    use notify::{Event, EventKind, RecursiveMode, Watcher};
+    use notify::{Event, RecursiveMode, Watcher};
+    use std::collections::HashSet;
     use std::sync::mpsc;
-    use std::time::Duration;
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::{Duration, Instant};
+
+    const DEBOUNCE: Duration = Duration::from_millis(500);
 
     let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
     let mut watcher = notify::recommended_watcher(tx)?;
@@ -376,34 +380,71 @@ fn watch_vault(
 
     tracing::info!("file watcher active");
 
-    for res in rx {
-        let event = match res {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!("watcher error: {e}");
-                continue;
-            }
-        };
+    let mut dirty: HashSet<PathBuf> = HashSet::new();
 
-        let is_relevant = matches!(
-            event.kind,
-            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-        );
-        if !is_relevant {
+    while let Ok(first) = rx.recv() {
+        collect_dirty(&first, &mut dirty);
+
+        // Drain any further events that arrive within the debounce window.
+        let deadline = Instant::now() + DEBOUNCE;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match rx.recv_timeout(remaining) {
+                Ok(r) => collect_dirty(&r, &mut dirty),
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => return Ok(()),
+            }
+        }
+
+        if dirty.is_empty() {
             continue;
         }
 
-        std::thread::sleep(Duration::from_millis(500));
+        // Build name map once for the whole batch.
+        let md_files = indexer::collect_md_files(&vault);
+        let name_map = indexer::wikilinks::build_name_map(&md_files);
 
-        for path in event.paths {
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
+        let mut any_changed = false;
+        for path in dirty.drain() {
+            match indexer::reindex_file(&vault, &path, &db, &embedder, &name_map) {
+                Ok(changed) => any_changed |= changed,
+                Err(e) => tracing::warn!("reindex error for {}: {e}", path.display()),
             }
-            if let Err(e) = indexer::reindex_file(&vault, &path, &db, &embedder) {
-                tracing::warn!("reindex error for {}: {e}", path.display());
+        }
+
+        if any_changed {
+            if let Err(e) = embeddings::cleora::compute(&db) {
+                tracing::warn!("Cleora recompute failed: {e}");
             }
         }
     }
 
     Ok(())
+}
+
+fn collect_dirty(
+    res: &notify::Result<notify::Event>,
+    dirty: &mut std::collections::HashSet<PathBuf>,
+) {
+    use notify::EventKind;
+    let event = match res {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!("watcher error: {e}");
+            return;
+        }
+    };
+    if matches!(
+        event.kind,
+        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+    ) {
+        for path in &event.paths {
+            if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                dirty.insert(path.clone());
+            }
+        }
+    }
 }

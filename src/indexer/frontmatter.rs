@@ -15,23 +15,24 @@ fn split_frontmatter(content: &str) -> (&str, &str) {
     if !content.starts_with("---") {
         return ("", content);
     }
-    // Find the newline after the opening ---
+    // Skip the opening --- line (handles both \n and \r\n)
     let after_open = match content.find('\n') {
         Some(i) => i + 1,
         None => return ("", content),
     };
-    // Find the closing ---
-    let body = &content[after_open..];
-    for (i, line) in body.lines().enumerate() {
-        if line.trim() == "---" || line.trim() == "..." {
-            let end = after_open + body.lines().take(i).map(|l| l.len() + 1).sum::<usize>();
-            return (
-                &content[after_open..end],
-                &body[body.lines().take(i + 1).map(|l| l.len() + 1).sum::<usize>()..],
-            );
+    let rest = &content[after_open..];
+    // Scan line-by-line using byte positions so \r\n is handled correctly.
+    let mut pos = 0;
+    while pos < rest.len() {
+        let line_end = rest[pos..].find('\n').map_or(rest.len() - pos, |i| i + 1);
+        // Strip line terminator(s) before comparing
+        let line = rest[pos..pos + line_end].trim_end_matches(['\r', '\n']);
+        if line == "---" || line == "..." {
+            return (&rest[..pos], &rest[pos + line_end..]);
         }
+        pos += line_end;
     }
-    // No closing delimiter found — treat as no frontmatter
+    // No closing delimiter — treat entire content as having no frontmatter
     ("", content)
 }
 

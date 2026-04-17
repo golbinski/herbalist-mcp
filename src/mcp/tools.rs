@@ -28,7 +28,11 @@ pub fn search_notes(ctx: &ToolContext, params: &Value) -> Result<Value> {
         .next()
         .unwrap_or_default();
 
-    let chunks = ctx.db.lock().unwrap().all_embedded_chunks()?;
+    // Acquire lock once for both reads (consistent snapshot, one lock/unlock)
+    let (chunks, fts_results) = {
+        let db = ctx.db.lock().unwrap();
+        (db.all_embedded_chunks()?, db.fts_search(query, top_k * 2)?)
+    };
 
     let mut scored: Vec<(f32, &crate::db::EmbeddedChunk)> = chunks
         .iter()
@@ -39,9 +43,6 @@ pub fn search_notes(ctx: &ToolContext, params: &Value) -> Result<Value> {
         })
         .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-
-    // FTS keyword search
-    let fts_results = ctx.db.lock().unwrap().fts_search(query, top_k * 2)?;
     let fts_set: HashMap<i64, &crate::db::FtsResult> =
         fts_results.iter().map(|r| (r.chunk_id, r)).collect();
 
@@ -93,13 +94,21 @@ pub fn get_note(ctx: &ToolContext, params: &Value) -> Result<Value> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing 'path' parameter"))?;
 
+    // Reject absolute paths and any path containing '..' components.
+    {
+        let p = std::path::Path::new(path);
+        if p.is_absolute() || p.components().any(|c| c == std::path::Component::ParentDir) {
+            anyhow::bail!("invalid note path: {}", path);
+        }
+    }
+
     let full_path = ctx.vault.join(path);
     let content = std::fs::read_to_string(&full_path)
         .unwrap_or_else(|_| "(file not found on disk)".to_owned());
 
     let db = ctx.db.lock().unwrap();
     let frontmatter = db.get_frontmatter(path)?;
-    let note_tags: Vec<String> = db.notes_by_tag_for_note(path)?;
+    let note_tags: Vec<String> = db.tags_for_note(path)?;
     let outlinks = db.outlinks(path)?;
     let backlinks = db.backlinks(path)?;
 

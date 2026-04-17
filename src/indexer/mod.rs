@@ -38,8 +38,8 @@ pub fn index_vault(vault: &Path, db: &Arc<Mutex<Db>>, embedder: &Arc<Embedder>) 
         }
     }
 
-    // Process each file — compute SHA256, skip if unchanged
-    let mut to_reindex: Vec<PathBuf> = Vec::new();
+    // Process each file — compute SHA256, skip if unchanged; cache content
+    let mut to_reindex: Vec<(PathBuf, String)> = Vec::new(); // (path, cached content)
     for file in &md_files {
         let rel = vault_relative(vault, file);
         let mtime = file_mtime(file).unwrap_or(0);
@@ -63,7 +63,7 @@ pub fn index_vault(vault: &Path, db: &Arc<Mutex<Db>>, embedder: &Arc<Embedder>) 
         }
         drop(db);
 
-        to_reindex.push(file.clone());
+        to_reindex.push((file.clone(), content));
     }
 
     tracing::info!("{} files need reindexing", to_reindex.len());
@@ -76,11 +76,10 @@ pub fn index_vault(vault: &Path, db: &Arc<Mutex<Db>>, embedder: &Arc<Embedder>) 
     // Parse and store chunks/tags/frontmatter/links (no embedding yet)
     let mut chunk_ids_by_file: HashMap<String, Vec<(i64, String)>> = HashMap::new(); // path → [(id, text)]
 
-    for file in &to_reindex {
+    for (file, content) in &to_reindex {
         let rel = vault_relative(vault, file);
-        let content = std::fs::read_to_string(file)?;
 
-        let (fm, body) = frontmatter::parse(&content);
+        let (fm, body) = frontmatter::parse(content);
 
         let db = db.lock().unwrap();
 
@@ -112,7 +111,7 @@ pub fn index_vault(vault: &Path, db: &Arc<Mutex<Db>>, embedder: &Arc<Embedder>) 
         chunk_ids_by_file.insert(rel.clone(), texts_for_embedding);
 
         // Wikilinks — resolve targets to vault-relative paths
-        let targets = wikilinks::extract_targets(&content);
+        let targets = wikilinks::extract_targets(content);
         for target in targets {
             if let Some(resolved) = wikilinks::resolve(&target, &name_map) {
                 let rel_target = vault_relative(vault, &resolved);
@@ -124,7 +123,7 @@ pub fn index_vault(vault: &Path, db: &Arc<Mutex<Db>>, embedder: &Arc<Embedder>) 
     }
 
     // Embed all new chunks (batched per file)
-    tracing::info!("embedding chunks...");
+    tracing::info!("embedding {} file(s)...", chunk_ids_by_file.len());
     for (rel, id_texts) in &chunk_ids_by_file {
         if id_texts.is_empty() {
             continue;
@@ -147,20 +146,22 @@ pub fn index_vault(vault: &Path, db: &Arc<Mutex<Db>>, embedder: &Arc<Embedder>) 
     Ok(())
 }
 
-/// Index a single file (used by the file watcher).
+/// Index a single file. Returns `true` if content changed (caller should
+/// recompute Cleora after processing a batch). Takes a pre-built `name_map`
+/// so the watcher can build it once per batch rather than once per file.
 pub fn reindex_file(
     vault: &Path,
     file: &Path,
     db: &Arc<Mutex<Db>>,
     embedder: &Arc<Embedder>,
-) -> Result<()> {
+    name_map: &HashMap<String, PathBuf>,
+) -> Result<bool> {
     let rel = vault_relative(vault, file);
     tracing::debug!("reindexing: {}", rel);
 
     if !file.exists() {
-        let db = db.lock().unwrap();
-        db.delete_note(&rel)?;
-        return Ok(());
+        db.lock().unwrap().delete_note(&rel)?;
+        return Ok(true);
     }
 
     let content = std::fs::read_to_string(file)?;
@@ -171,7 +172,7 @@ pub fn reindex_file(
         let db = db.lock().unwrap();
         if let Some(meta) = db.get_note_meta(&rel)? {
             if meta.sha256 == sha {
-                return Ok(());
+                return Ok(false); // unchanged
             }
         }
         db.upsert_note(&rel, mtime, &sha)?;
@@ -180,9 +181,6 @@ pub fn reindex_file(
         db.delete_frontmatter(&rel)?;
         db.delete_links(&rel)?;
     }
-
-    let md_files = collect_md_files(vault);
-    let name_map = wikilinks::build_name_map(&md_files);
 
     let (fm, body) = frontmatter::parse(&content);
     let mut texts_for_embedding: Vec<(i64, String)> = Vec::new();
@@ -209,7 +207,7 @@ pub fn reindex_file(
             texts_for_embedding.push((id, embed_text));
         }
         for target in wikilinks::extract_targets(&content) {
-            if let Some(resolved) = wikilinks::resolve(&target, &name_map) {
+            if let Some(resolved) = wikilinks::resolve(&target, name_map) {
                 db.insert_link(&rel, &vault_relative(vault, &resolved))?;
             }
         }
@@ -227,8 +225,7 @@ pub fn reindex_file(
         }
     }
 
-    crate::embeddings::cleora::compute(db)?;
-    Ok(())
+    Ok(true)
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -281,17 +278,29 @@ fn file_mtime(path: &Path) -> Option<i64> {
 
 fn extract_inline_tags(body: &str) -> Vec<String> {
     let mut tags = Vec::new();
-    for word in body.split_whitespace() {
-        if word.starts_with('#') && word.len() > 1 {
-            let tag = word
-                .trim_start_matches('#')
-                .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
-            if !tag.is_empty()
-                && tag
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-            {
-                tags.push(tag.to_owned());
+    let mut in_fence = false;
+    for line in body.lines() {
+        // Track fenced code blocks (``` or ~~~) so we don't pick up #include etc.
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        for word in line.split_whitespace() {
+            if word.starts_with('#') && word.len() > 1 {
+                let tag = word
+                    .trim_start_matches('#')
+                    .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
+                if !tag.is_empty()
+                    && tag
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+                {
+                    tags.push(tag.to_owned());
+                }
             }
         }
     }

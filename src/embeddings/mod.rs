@@ -52,11 +52,13 @@ impl Embedder {
             tokenizer_config_file: read("tokenizer_config.json")?,
         };
         let user_model = UserDefinedEmbeddingModel::new(onnx_file, tokenizer_files);
-        let dimension = detect_dimension(&user_model);
         let inner = TextEmbedding::try_new_from_user_defined(
             user_model,
             InitOptionsUserDefined::default(),
         )?;
+        // Probe real output dimension; fastembed doesn't expose it before inference.
+        let probe = inner.embed(vec![""], None)?;
+        let dimension = probe.first().map(|v| v.len()).unwrap_or(384);
         Ok(Self { inner, dimension })
     }
 
@@ -104,13 +106,6 @@ fn model_dimension(model: &EmbeddingModel) -> usize {
         | EmbeddingModel::NomicEmbedTextV15Q => 768,
         _ => 384,
     }
-}
-
-/// Detect output dimension from user-defined model config if available, else default to 384.
-fn detect_dimension(_model: &UserDefinedEmbeddingModel) -> usize {
-    // fastembed doesn't expose dim before inference; we default to 384.
-    // The actual dimension is determined at embed() time.
-    384
 }
 
 /// Parse the model name from CLI --model flag into an EmbeddingModel enum.
