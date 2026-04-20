@@ -14,15 +14,25 @@ A semantic search and graph navigation MCP server for [Obsidian](https://obsidia
 
 ## Installation
 
-```bash
-git clone https://github.com/golbinski/herbalist-mcp
-cd herbalist-mcp
-cargo build --release
+### macOS / Linux
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/golbinski/herbalist-mcp/main/install.sh | sh
 ```
 
-The binary is at `target/release/herbalist-mcp`. Copy it anywhere on your `PATH`.
+The script detects your OS and architecture, downloads the right binary from [Releases](https://github.com/golbinski/herbalist-mcp/releases), verifies its SHA256 checksum, installs it to `~/.local/bin`, and — if you provide a vault path — indexes it and writes MCP entries into Claude Code (`~/.claude.json`) and VS Code (`Code/User/mcp.json`) if those are present.
 
-Or download a pre-built binary from [Releases](https://github.com/golbinski/herbalist-mcp/releases):
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/golbinski/herbalist-mcp/main/install.ps1 | iex
+```
+
+Same steps as above: downloads `herbalist-mcp-windows-x86_64.exe`, verifies SHA256, installs to `%LOCALAPPDATA%\herbalist-mcp`, adds it to your user PATH, and configures Claude Code and VS Code if found.
+
+### Manual install
+
+Download a pre-built binary from [Releases](https://github.com/golbinski/herbalist-mcp/releases):
 
 | Platform | File |
 |----------|------|
@@ -32,6 +42,15 @@ Or download a pre-built binary from [Releases](https://github.com/golbinski/herb
 | Windows x86_64 | `herbalist-mcp-windows-x86_64.exe` |
 
 Each release includes a `.sha256` checksum file and a GitHub build provenance attestation. Verify both before running.
+
+### Build from source
+
+```bash
+git clone https://github.com/golbinski/herbalist-mcp
+cd herbalist-mcp
+cargo build --release
+# binary at target/release/herbalist-mcp
+```
 
 ## Quick start with the sample vault
 
