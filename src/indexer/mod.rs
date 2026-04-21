@@ -241,14 +241,19 @@ pub fn collect_md_files(vault: &Path, includes: &[PathBuf]) -> Vec<PathBuf> {
     } else {
         includes
             .iter()
-            .map(|p| if p.is_absolute() { p.clone() } else { vault.join(p) })
+            .map(|p| {
+                if p.is_absolute() {
+                    p.clone()
+                } else {
+                    vault.join(p)
+                }
+            })
             .collect()
     };
 
     let filter = |e: &ignore::DirEntry| {
         let name = e.file_name().to_string_lossy();
-        !matches!(name.as_ref(), ".obsidian" | ".git")
-            && !name.starts_with(".herbalist")
+        !matches!(name.as_ref(), ".obsidian" | ".git") && !name.starts_with(".herbalist")
     };
 
     roots
