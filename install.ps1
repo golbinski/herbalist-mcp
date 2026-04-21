@@ -5,6 +5,7 @@
 param()
 
 $ErrorActionPreference = 'Stop'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $Repo     = 'golbinski/herbalist-mcp'
 $Artifact = 'herbalist-mcp-windows-x86_64.exe'
