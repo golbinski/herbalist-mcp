@@ -27,11 +27,11 @@ function Install-Binary {
     $version = Get-LatestVersion
     $baseUrl = "https://github.com/$Repo/releases/download/v$version"
     $tmpExe  = Join-Path $env:TEMP $Artifact
-    $tmpSha  = Join-Path $env:TEMP "$Artifact.sha256"
+    $tmpSha  = Join-Path $env:TEMP "${Artifact}.sha256"
 
     Write-Bold "Downloading $Artifact v$version..."
-    Invoke-WebRequest "$baseUrl/$Artifact"        -OutFile $tmpExe
-    Invoke-WebRequest "$baseUrl/$Artifact.sha256" -OutFile $tmpSha
+    Invoke-WebRequest "$baseUrl/$Artifact"               -OutFile $tmpExe
+    Invoke-WebRequest "$baseUrl/${Artifact}.sha256"      -OutFile $tmpSha
 
     $expected = ((Get-Content $tmpSha) -split '\s+')[0].ToUpper()
     $actual   = (Get-FileHash $tmpExe -Algorithm SHA256).Hash.ToUpper()
