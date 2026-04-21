@@ -7,9 +7,10 @@ param()
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$Repo     = 'golbinski/herbalist-mcp'
-$Artifact = 'herbalist-mcp-windows-x86_64.exe'
-$Binary   = 'herbalist-mcp.exe'
+$Repo      = 'golbinski/herbalist-mcp'
+$Artifact  = 'herbalist-mcp-windows-x86_64.exe'
+$Checksum  = 'herbalist-mcp-windows-x86_64.sha256'
+$Binary    = 'herbalist-mcp.exe'
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -28,11 +29,11 @@ function Install-Binary {
     $version = Get-LatestVersion
     $baseUrl = "https://github.com/$Repo/releases/download/v$version"
     $tmpExe  = Join-Path $env:TEMP $Artifact
-    $tmpSha  = Join-Path $env:TEMP "${Artifact}.sha256"
+    $tmpSha  = Join-Path $env:TEMP $Checksum
 
     Write-Bold "Downloading $Artifact v$version..."
-    Invoke-WebRequest "$baseUrl/$Artifact"               -OutFile $tmpExe
-    Invoke-WebRequest "$baseUrl/${Artifact}.sha256"      -OutFile $tmpSha
+    Invoke-WebRequest "$baseUrl/$Artifact"  -OutFile $tmpExe
+    Invoke-WebRequest "$baseUrl/$Checksum"  -OutFile $tmpSha
 
     $expected = ((Get-Content $tmpSha) -split '\s+')[0].ToUpper()
     $actual   = (Get-FileHash $tmpExe -Algorithm SHA256).Hash.ToUpper()
