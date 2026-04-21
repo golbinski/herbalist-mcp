@@ -41,6 +41,9 @@ enum Command {
         /// Override the configured embedding model name for this run.
         #[arg(long)]
         model: Option<String>,
+        /// Skip the automatic re-index on startup. Use when indexing is managed externally.
+        #[arg(long, default_value_t = false)]
+        skip_index: bool,
     },
     /// Index or re-index the vault without starting the server.
     ///
@@ -83,19 +86,20 @@ async fn main() -> Result<()> {
 
     match cli.command {
         None | Some(Command::Serve { .. }) => {
-            let (vault, db, model_path, model) = match cli.command {
+            let (vault, db, model_path, model, skip_index) = match cli.command {
                 Some(Command::Serve {
                     vault,
                     db,
                     model_path,
                     model,
-                }) => (vault, db, model_path, model),
+                    skip_index,
+                }) => (vault, db, model_path, model, skip_index),
                 _ => {
                     eprintln!("No subcommand given. Use --help for usage.");
                     std::process::exit(1);
                 }
             };
-            run_serve(vault, db, model_path, model).await
+            run_serve(vault, db, model_path, model, skip_index).await
         }
         Some(Command::Index {
             vault,
@@ -140,6 +144,7 @@ async fn run_serve(
     db_opt: Option<PathBuf>,
     model_path: Option<PathBuf>,
     model: Option<String>,
+    skip_index: bool,
 ) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -162,7 +167,9 @@ async fn run_serve(
     let db = Arc::new(Mutex::new(db::Db::open(&resolve_db(&vault, db_opt))?));
 
     // Auto-index on startup (incremental — skips unchanged files)
-    indexer::index_vault(&vault, &db, &embedder, &[])?;
+    if !skip_index {
+        indexer::index_vault(&vault, &db, &embedder, &[])?;
+    }
 
     // Spawn file watcher
     let vault_c = vault.clone();
