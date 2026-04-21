@@ -7,9 +7,8 @@ pub struct Db {
 }
 
 impl Db {
-    pub fn open(vault_root: &Path) -> Result<Self> {
-        let db_path = vault_root.join(".herbalist.db");
-        let conn = Connection::open(&db_path)
+    pub fn open(db_path: &Path) -> Result<Self> {
+        let conn = Connection::open(db_path)
             .with_context(|| format!("opening db at {}", db_path.display()))?;
         let db = Self { conn };
         db.migrate()?;

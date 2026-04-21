@@ -32,6 +32,9 @@ enum Command {
     Serve {
         #[arg(long, env = "HERBALIST_VAULT")]
         vault: PathBuf,
+        /// Custom database path (default: <vault>/.herbalist.db).
+        #[arg(long)]
+        db: Option<PathBuf>,
         /// Override the configured embedding model for this run.
         #[arg(long)]
         model_path: Option<PathBuf>,
@@ -46,6 +49,9 @@ enum Command {
     Index {
         #[arg(long, env = "HERBALIST_VAULT")]
         vault: PathBuf,
+        /// Custom database path (default: <vault>/.herbalist.db).
+        #[arg(long)]
+        db: Option<PathBuf>,
         /// Use a local ONNX model directory instead of downloading (bypasses prompt).
         #[arg(long)]
         model_path: Option<PathBuf>,
@@ -53,11 +59,17 @@ enum Command {
         /// saved choice. Run with --help to see available names.
         #[arg(long)]
         model: Option<String>,
+        /// Index only files under this directory (relative to vault). Repeatable.
+        #[arg(long)]
+        include: Vec<PathBuf>,
     },
     /// Ad-hoc search for testing without the MCP server.
     Search {
         #[arg(long, env = "HERBALIST_VAULT")]
         vault: PathBuf,
+        /// Custom database path (default: <vault>/.herbalist.db).
+        #[arg(long)]
+        db: Option<PathBuf>,
         #[arg(long)]
         query: String,
         #[arg(long, default_value = "10")]
@@ -71,34 +83,38 @@ async fn main() -> Result<()> {
 
     match cli.command {
         None | Some(Command::Serve { .. }) => {
-            let (vault, model_path, model) = match cli.command {
+            let (vault, db, model_path, model) = match cli.command {
                 Some(Command::Serve {
                     vault,
+                    db,
                     model_path,
                     model,
-                }) => (vault, model_path, model),
+                }) => (vault, db, model_path, model),
                 _ => {
                     eprintln!("No subcommand given. Use --help for usage.");
                     std::process::exit(1);
                 }
             };
-            run_serve(vault, model_path, model).await
+            run_serve(vault, db, model_path, model).await
         }
         Some(Command::Index {
             vault,
+            db,
             model_path,
             model,
+            include,
         }) => {
             init_logging();
-            run_index(vault, model_path, model)
+            run_index(vault, db, model_path, model, include)
         }
         Some(Command::Search {
             vault,
+            db,
             query,
             top_k,
         }) => {
             init_logging();
-            run_search(vault, query, top_k)
+            run_search(vault, db, query, top_k)
         }
     }
 }
@@ -113,10 +129,15 @@ fn init_logging() {
         .init();
 }
 
+fn resolve_db(vault: &Path, db: Option<PathBuf>) -> PathBuf {
+    db.unwrap_or_else(|| vault.join(".herbalist.db"))
+}
+
 // ── serve ─────────────────────────────────────────────────────────────────────
 
 async fn run_serve(
     vault: PathBuf,
+    db_opt: Option<PathBuf>,
     model_path: Option<PathBuf>,
     model: Option<String>,
 ) -> Result<()> {
@@ -133,15 +154,15 @@ async fn run_serve(
 
     // Resolve model: flag > stored config > error
     let embedder = Arc::new(resolve_embedder_for_serve(
-        &vault,
+        &resolve_db(&vault, db_opt.clone()),
         model_path.as_deref(),
         model.as_deref(),
     )?);
 
-    let db = Arc::new(Mutex::new(db::Db::open(&vault)?));
+    let db = Arc::new(Mutex::new(db::Db::open(&resolve_db(&vault, db_opt))?));
 
     // Auto-index on startup (incremental — skips unchanged files)
-    indexer::index_vault(&vault, &db, &embedder)?;
+    indexer::index_vault(&vault, &db, &embedder, &[])?;
 
     // Spawn file watcher
     let vault_c = vault.clone();
@@ -175,7 +196,7 @@ async fn run_serve(
 /// For `serve`: resolve the embedder without any interactive prompt.
 /// Priority: --model-path > --model flag > stored config > error.
 fn resolve_embedder_for_serve(
-    vault: &Path,
+    db_path: &Path,
     model_path: Option<&Path>,
     model_name: Option<&str>,
 ) -> Result<embeddings::Embedder> {
@@ -191,7 +212,7 @@ fn resolve_embedder_for_serve(
     }
 
     // Fall back to stored config
-    let db = db::Db::open(vault)?;
+    let db = db::Db::open(db_path)?;
     match db.get_config("model")? {
         Some(stored) => {
             tracing::info!("using configured embedding model: {}", stored);
@@ -199,32 +220,38 @@ fn resolve_embedder_for_serve(
             embeddings::Embedder::from_registry(model)
         }
         None => bail!(
-            "No embedding model configured for this vault.\n\
-             Run `herbalist-mcp index --vault {}` first to index the vault \
-             and choose an embedding model.",
-            vault.display()
+            "No embedding model configured. \
+             Run `herbalist-mcp index --vault <vault>` first to index the vault \
+             and choose an embedding model."
         ),
     }
 }
 
 // ── index ─────────────────────────────────────────────────────────────────────
 
-fn run_index(vault: PathBuf, model_path: Option<PathBuf>, model: Option<String>) -> Result<()> {
+fn run_index(
+    vault: PathBuf,
+    db_opt: Option<PathBuf>,
+    model_path: Option<PathBuf>,
+    model: Option<String>,
+    includes: Vec<PathBuf>,
+) -> Result<()> {
     let vault = vault.canonicalize()?;
+    let db_path = resolve_db(&vault, db_opt);
 
     // Resolve model: --model-path > --model flag > stored config > interactive prompt
     let (embedder, model_key) =
-        resolve_embedder_for_index(&vault, model_path.as_deref(), model.as_deref())?;
+        resolve_embedder_for_index(&db_path, model_path.as_deref(), model.as_deref())?;
     let embedder = Arc::new(embedder);
 
-    let db = Arc::new(Mutex::new(db::Db::open(&vault)?));
+    let db = Arc::new(Mutex::new(db::Db::open(&db_path)?));
 
     // Persist the model choice so `serve` and `search` can pick it up
     if let Some(key) = model_key {
         db.lock().unwrap().set_config("model", &key)?;
     }
 
-    indexer::index_vault(&vault, &db, &embedder)?;
+    indexer::index_vault(&vault, &db, &embedder, &includes)?;
     eprintln!("Indexing complete.");
     Ok(())
 }
@@ -232,7 +259,7 @@ fn run_index(vault: PathBuf, model_path: Option<PathBuf>, model: Option<String>)
 /// For `index`: resolve the embedder, showing an interactive prompt when needed.
 /// Returns the embedder and the model key to persist (None for --model-path).
 fn resolve_embedder_for_index(
-    vault: &Path,
+    db_path: &Path,
     model_path: Option<&Path>,
     model_name: Option<&str>,
 ) -> Result<(embeddings::Embedder, Option<String>)> {
@@ -253,7 +280,7 @@ fn resolve_embedder_for_index(
     }
 
     // Check for previously saved choice
-    let db = db::Db::open(vault)?;
+    let db = db::Db::open(db_path)?;
     if let Some(stored) = db.get_config("model")? {
         eprintln!("Using configured embedding model: {stored}");
         let model = embeddings::model_from_name(&stored)?;
@@ -327,10 +354,11 @@ fn prompt_model_choice() -> Result<(String, EmbeddingModel)> {
 
 // ── search ────────────────────────────────────────────────────────────────────
 
-fn run_search(vault: PathBuf, query: String, top_k: usize) -> Result<()> {
+fn run_search(vault: PathBuf, db_opt: Option<PathBuf>, query: String, top_k: usize) -> Result<()> {
     let vault = vault.canonicalize()?;
+    let db_path = resolve_db(&vault, db_opt);
 
-    let db_only = db::Db::open(&vault)?;
+    let db_only = db::Db::open(&db_path)?;
     let stored = db_only.get_config("model")?;
     drop(db_only);
 
@@ -346,7 +374,7 @@ fn run_search(vault: PathBuf, query: String, top_k: usize) -> Result<()> {
         ),
     };
 
-    let db = Arc::new(Mutex::new(db::Db::open(&vault)?));
+    let db = Arc::new(Mutex::new(db::Db::open(&db_path)?));
     let ctx = ToolContext {
         vault,
         db,
@@ -404,7 +432,7 @@ fn watch_vault(
         }
 
         // Build name map once for the whole batch.
-        let md_files = indexer::collect_md_files(&vault);
+        let md_files = indexer::collect_md_files(&vault, &[]);
         let name_map = indexer::wikilinks::build_name_map(&md_files);
 
         let mut any_changed = false;

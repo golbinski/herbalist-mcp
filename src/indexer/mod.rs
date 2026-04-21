@@ -14,10 +14,15 @@ use std::time::SystemTime;
 
 /// Index (or incrementally re-index) a vault.
 /// Skips files whose SHA256 hasn't changed since last index.
-pub fn index_vault(vault: &Path, db: &Arc<Mutex<Db>>, embedder: &Arc<Embedder>) -> Result<()> {
+pub fn index_vault(
+    vault: &Path,
+    db: &Arc<Mutex<Db>>,
+    embedder: &Arc<Embedder>,
+    includes: &[PathBuf],
+) -> Result<()> {
     tracing::info!("indexing vault: {}", vault.display());
 
-    let md_files = collect_md_files(vault);
+    let md_files = collect_md_files(vault, includes);
     tracing::info!("found {} markdown files", md_files.len());
 
     let name_map = wikilinks::build_name_map(&md_files);
@@ -230,25 +235,41 @@ pub fn reindex_file(
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-pub fn collect_md_files(vault: &Path) -> Vec<PathBuf> {
-    WalkBuilder::new(vault)
-        .hidden(false)
-        .git_ignore(true)
-        .git_global(false)
-        .git_exclude(false)
-        .filter_entry(|e| {
-            let name = e.file_name().to_string_lossy();
-            !matches!(name.as_ref(), ".obsidian" | ".git" | ".herbalist.db")
-        })
-        .build()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-        .map(|e| e.into_path())
-        .filter(|p| {
-            p.extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("md"))
-                .unwrap_or(false)
+pub fn collect_md_files(vault: &Path, includes: &[PathBuf]) -> Vec<PathBuf> {
+    let roots: Vec<PathBuf> = if includes.is_empty() {
+        vec![vault.to_path_buf()]
+    } else {
+        includes
+            .iter()
+            .map(|p| if p.is_absolute() { p.clone() } else { vault.join(p) })
+            .collect()
+    };
+
+    let filter = |e: &ignore::DirEntry| {
+        let name = e.file_name().to_string_lossy();
+        !matches!(name.as_ref(), ".obsidian" | ".git")
+            && !name.starts_with(".herbalist")
+    };
+
+    roots
+        .iter()
+        .flat_map(|root| {
+            WalkBuilder::new(root)
+                .hidden(false)
+                .git_ignore(true)
+                .git_global(false)
+                .git_exclude(false)
+                .filter_entry(filter)
+                .build()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+                .map(|e| e.into_path())
+                .filter(|p| {
+                    p.extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.eq_ignore_ascii_case("md"))
+                        .unwrap_or(false)
+                })
         })
         .collect()
 }
