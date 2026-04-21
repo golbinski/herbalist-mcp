@@ -47,7 +47,8 @@ function Install-Binary {
     Move-Item -Force $tmpExe $dest
 
     # Add install dir to user PATH if not already present
-    $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User') ?? ''
+    $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+    if ($null -eq $userPath) { $userPath = '' }
     if ($userPath -notlike "*$installDir*") {
         [Environment]::SetEnvironmentVariable('PATH', "$userPath;$installDir", 'User')
         Write-Warn "Added $installDir to user PATH. Restart your shell for it to take effect."
