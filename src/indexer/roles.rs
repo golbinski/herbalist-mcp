@@ -76,7 +76,7 @@ pub fn compute(db: &Arc<Mutex<Db>>, configs: &LoadedConfigs) -> Result<()> {
             }
 
             // Sort descending by revision; highest epoch = head.
-            group.sort_by(|a, b| b.1.cmp(&a.1));
+            group.sort_by_key(|&(_, rev)| std::cmp::Reverse(rev));
             let (head_path, _) = &group[0];
 
             for (path, _) in &group[1..] {
