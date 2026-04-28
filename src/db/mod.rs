@@ -74,7 +74,34 @@ impl Db {
                  value TEXT NOT NULL
              );",
         )?;
+
+        // Additive migrations — guarded so they are safe on existing databases.
+        if !self.column_exists("notes", "role")? {
+            self.conn.execute_batch(
+                "ALTER TABLE notes ADD COLUMN role TEXT NOT NULL DEFAULT 'primary';",
+            )?;
+        }
+        if !self.column_exists("links", "edge_type")? {
+            self.conn.execute_batch(
+                "ALTER TABLE links ADD COLUMN edge_type TEXT NOT NULL DEFAULT 'wikilink';",
+            )?;
+        }
+        if !self.column_exists("links", "edge_weight")? {
+            self.conn.execute_batch(
+                "ALTER TABLE links ADD COLUMN edge_weight REAL NOT NULL DEFAULT 1.0;",
+            )?;
+        }
+
         Ok(())
+    }
+
+    fn column_exists(&self, table: &str, column: &str) -> Result<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name=?2",
+            params![table, column],
+            |r| r.get(0),
+        )?;
+        Ok(count > 0)
     }
 
     // ── notes ────────────────────────────────────────────────────────────────
@@ -96,12 +123,64 @@ impl Db {
     }
 
     pub fn upsert_note(&self, path: &str, mtime: i64, sha256: &str) -> Result<()> {
+        // role is not touched here — compute_roles owns it after indexing.
         self.conn.execute(
             "INSERT INTO notes(path, mtime, sha256) VALUES(?1,?2,?3)
              ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, sha256=excluded.sha256",
             params![path, mtime, sha256],
         )?;
         Ok(())
+    }
+
+    pub fn set_note_role(&self, path: &str, role: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE notes SET role=?2 WHERE path=?1",
+            params![path, role],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_note_role(&self, path: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT role FROM notes WHERE path=?1")?;
+        let mut rows = stmt.query(params![path])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn reset_all_roles(&self) -> Result<()> {
+        self.conn.execute("UPDATE notes SET role='primary'", [])?;
+        Ok(())
+    }
+
+    /// Return (note_path, resource_id, revision_epoch) for every note that
+    /// carries both `resource_key` and `revision_key` in its frontmatter.
+    pub fn notes_with_versioning_keys(
+        &self,
+        resource_key: &str,
+        revision_key: &str,
+    ) -> Result<Vec<(String, String, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT f1.note_path, f1.value, CAST(f2.value AS INTEGER)
+             FROM frontmatter f1
+             JOIN frontmatter f2
+               ON f2.note_path = f1.note_path AND f2.key = ?2
+             WHERE f1.key = ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![resource_key, revision_key], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     pub fn delete_note(&self, path: &str) -> Result<()> {
@@ -166,9 +245,12 @@ impl Db {
     }
 
     pub fn all_tags(&self) -> Result<Vec<String>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT DISTINCT tag FROM tags ORDER BY tag")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT t.tag FROM tags t
+             JOIN notes n ON n.path = t.note_path
+             WHERE n.role='primary'
+             ORDER BY t.tag",
+        )?;
         let tags = stmt
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?;
@@ -176,9 +258,12 @@ impl Db {
     }
 
     pub fn notes_by_tag(&self, tag: &str) -> Result<Vec<String>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT note_path FROM tags WHERE tag=?1 ORDER BY note_path")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT t.note_path FROM tags t
+             JOIN notes n ON n.path = t.note_path
+             WHERE t.tag=?1 AND n.role='primary'
+             ORDER BY t.note_path",
+        )?;
         let paths = stmt
             .query_map(params![tag], |r| r.get(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?;
@@ -231,10 +316,13 @@ impl Db {
         Ok(())
     }
 
-    /// Returns all chunks that have embeddings.
+    /// Returns all chunks that have embeddings, restricted to primary-role notes.
     pub fn all_embedded_chunks(&self) -> Result<Vec<EmbeddedChunk>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, note_path, heading, content, embedding FROM chunks WHERE embedding IS NOT NULL",
+            "SELECT c.id, c.note_path, c.heading, c.content, c.embedding
+             FROM chunks c
+             JOIN notes n ON n.path = c.note_path
+             WHERE c.embedding IS NOT NULL AND n.role='primary'",
         )?;
         let chunks = stmt
             .query_map([], |r| {
@@ -256,10 +344,12 @@ impl Db {
     pub fn fts_search(&self, query: &str, limit: usize) -> Result<Vec<FtsResult>> {
         let safe_query = sanitize_fts_query(query);
         let mut stmt = self.conn.prepare(
-            "SELECT chunk_id, note_path, heading, snippet(chunks_fts, 0, '[', ']', '...', 32), rank
+            "SELECT chunks_fts.chunk_id, chunks_fts.note_path, chunks_fts.heading,
+                    snippet(chunks_fts, 0, '[', ']', '...', 32), chunks_fts.rank
              FROM chunks_fts
-             WHERE chunks_fts MATCH ?1
-             ORDER BY rank
+             JOIN notes ON notes.path = chunks_fts.note_path
+             WHERE chunks_fts MATCH ?1 AND notes.role='primary'
+             ORDER BY chunks_fts.rank
              LIMIT ?2",
         )?;
         let rows = stmt
@@ -288,38 +378,70 @@ impl Db {
 
     pub fn insert_link(&self, source_path: &str, target_path: &str) -> Result<()> {
         self.conn.execute(
-            "INSERT OR IGNORE INTO links(source_path,target_path) VALUES(?1,?2)",
+            "INSERT OR IGNORE INTO links(source_path,target_path,edge_type,edge_weight)
+             VALUES(?1,?2,'wikilink',1.0)",
             params![source_path, target_path],
         )?;
         Ok(())
     }
 
+    /// Insert a revision_of edge.  Skipped if a wikilink already exists for
+    /// the same (source, target) pair — wikilinks take precedence.
+    pub fn insert_revision_link(
+        &self,
+        source_path: &str,
+        target_path: &str,
+        weight: f32,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO links(source_path,target_path,edge_type,edge_weight)
+             VALUES(?1,?2,'revision_of',?3)",
+            params![source_path, target_path, weight],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_all_revision_links(&self) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM links WHERE edge_type='revision_of'", [])?;
+        Ok(())
+    }
+
+    /// Only primary-role notes appear as outlink targets.
     pub fn outlinks(&self, path: &str) -> Result<Vec<String>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT target_path FROM links WHERE source_path=?1 ORDER BY target_path")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT l.target_path FROM links l
+             JOIN notes n ON n.path = l.target_path
+             WHERE l.source_path=?1 AND n.role='primary'
+             ORDER BY l.target_path",
+        )?;
         let paths = stmt
             .query_map(params![path], |r| r.get(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?;
         Ok(paths)
     }
 
+    /// Only primary-role notes appear as backlink sources.
     pub fn backlinks(&self, path: &str) -> Result<Vec<String>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT source_path FROM links WHERE target_path=?1 ORDER BY source_path")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT l.source_path FROM links l
+             JOIN notes n ON n.path = l.source_path
+             WHERE l.target_path=?1 AND n.role='primary'
+             ORDER BY l.source_path",
+        )?;
         let paths = stmt
             .query_map(params![path], |r| r.get(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?;
         Ok(paths)
     }
 
-    pub fn all_links(&self) -> Result<Vec<(String, String)>> {
+    /// Returns all links with their edge weights (used by Cleora).
+    pub fn all_links(&self) -> Result<Vec<(String, String, f32)>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT source_path, target_path FROM links")?;
+            .prepare("SELECT source_path, target_path, edge_weight FROM links")?;
         let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -336,10 +458,14 @@ impl Db {
         Ok(())
     }
 
+    /// Returns note-level embeddings restricted to primary-role notes.
     pub fn all_note_embeddings(&self) -> Result<Vec<(String, Vec<u8>)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT note_path, embedding FROM note_embeddings")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT ne.note_path, ne.embedding
+             FROM note_embeddings ne
+             JOIN notes n ON n.path = ne.note_path
+             WHERE n.role='primary'",
+        )?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;

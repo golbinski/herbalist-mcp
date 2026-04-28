@@ -50,22 +50,23 @@ pub fn compute(db: &Arc<Mutex<Db>>) -> Result<()> {
         })
         .collect();
 
-    // Build adjacency lists (both directions)
+    // Build weighted adjacency lists (both directions).
+    // edge_weight comes from the links table (wikilink=1.0, revision_of=0.5).
     let links = db.all_links()?;
-    let mut out_neighbors: Vec<Vec<usize>> = vec![vec![]; n];
-    let mut in_neighbors: Vec<Vec<usize>> = vec![vec![]; n];
-    for (src, tgt) in &links {
+    let mut out_neighbors: Vec<Vec<(usize, f32)>> = vec![vec![]; n];
+    let mut in_neighbors: Vec<Vec<(usize, f32)>> = vec![vec![]; n];
+    for (src, tgt, weight) in &links {
         if let (Some(&si), Some(&ti)) = (idx.get(src.as_str()), idx.get(tgt.as_str())) {
-            out_neighbors[si].push(ti);
-            in_neighbors[ti].push(si);
+            out_neighbors[si].push((ti, *weight));
+            in_neighbors[ti].push((si, *weight));
         }
     }
 
-    // Propagation
+    // Weighted propagation: each neighbor contributes proportionally to its weight.
     for _ in 0..N_ITERS {
         let prev = vecs.clone();
         for i in 0..n {
-            let neighbors: Vec<usize> = out_neighbors[i]
+            let neighbors: Vec<(usize, f32)> = out_neighbors[i]
                 .iter()
                 .chain(in_neighbors[i].iter())
                 .copied()
@@ -77,15 +78,15 @@ pub fn compute(db: &Arc<Mutex<Db>>) -> Result<()> {
             }
 
             let mut agg = prev[i].clone();
-            for &j in &neighbors {
+            let mut total_weight = 1.0f32; // self weight = 1
+            for &(j, w) in &neighbors {
                 for (a, b) in agg.iter_mut().zip(prev[j].iter()) {
-                    *a += b;
+                    *a += b * w;
                 }
+                total_weight += w;
             }
-            // Average
-            let count = (neighbors.len() + 1) as f32;
             for x in agg.iter_mut() {
-                *x /= count;
+                *x /= total_weight;
             }
             l2_normalize(&mut agg);
             vecs[i] = agg;

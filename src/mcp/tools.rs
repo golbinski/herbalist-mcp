@@ -102,6 +102,11 @@ pub fn get_note(ctx: &ToolContext, params: &Value) -> Result<Value> {
         }
     }
 
+    let role = ctx.db.lock().unwrap().get_note_role(path)?;
+    if role.as_deref() == Some("archival") {
+        anyhow::bail!("note not found: {path}");
+    }
+
     let full_path = ctx.vault.join(path);
     let content = std::fs::read_to_string(&full_path)
         .unwrap_or_else(|_| "(file not found on disk)".to_owned());

@@ -1,7 +1,9 @@
 pub mod chunker;
 pub mod frontmatter;
+pub mod roles;
 pub mod wikilinks;
 
+use crate::config::LoadedConfigs;
 use crate::db::Db;
 use crate::embeddings::Embedder;
 use anyhow::{Context, Result};
@@ -19,6 +21,7 @@ pub fn index_vault(
     db: &Arc<Mutex<Db>>,
     embedder: &Arc<Embedder>,
     includes: &[PathBuf],
+    configs: &LoadedConfigs,
 ) -> Result<()> {
     tracing::info!("indexing vault: {}", vault.display());
 
@@ -142,6 +145,10 @@ pub fn index_vault(
             db.set_chunk_embedding(*id, embedding)?;
         }
     }
+
+    // Assign roles based on versioning config
+    tracing::info!("computing note roles...");
+    roles::compute(db, configs)?;
 
     // Recompute Cleora graph embeddings
     tracing::info!("computing graph embeddings...");

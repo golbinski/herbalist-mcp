@@ -1,3 +1,4 @@
+mod config;
 mod db;
 mod embeddings;
 mod indexer;
@@ -168,7 +169,11 @@ async fn run_serve(
 
     // Auto-index on startup (incremental — skips unchanged files)
     if !skip_index {
-        indexer::index_vault(&vault, &db, &embedder, &[])?;
+        let configs = config::load(&vault).unwrap_or_else(|e| {
+            tracing::warn!("could not load .herbalist.yaml: {e}");
+            config::LoadedConfigs::empty()
+        });
+        indexer::index_vault(&vault, &db, &embedder, &[], &configs)?;
     }
 
     // Spawn file watcher
@@ -258,7 +263,12 @@ fn run_index(
         db.lock().unwrap().set_config("model", &key)?;
     }
 
-    indexer::index_vault(&vault, &db, &embedder, &includes)?;
+    let configs = config::load(&vault).unwrap_or_else(|e| {
+        eprintln!("Warning: could not load .herbalist.yaml: {e}");
+        config::LoadedConfigs::empty()
+    });
+
+    indexer::index_vault(&vault, &db, &embedder, &includes, &configs)?;
     eprintln!("Indexing complete.");
     Ok(())
 }
@@ -451,6 +461,13 @@ fn watch_vault(
         }
 
         if any_changed {
+            let configs = config::load(&vault).unwrap_or_else(|e| {
+                tracing::warn!("could not reload .herbalist.yaml: {e}");
+                config::LoadedConfigs::empty()
+            });
+            if let Err(e) = indexer::roles::compute(&db, &configs) {
+                tracing::warn!("role recompute failed: {e}");
+            }
             if let Err(e) = embeddings::cleora::compute(&db) {
                 tracing::warn!("Cleora recompute failed: {e}");
             }
